@@ -540,8 +540,27 @@ mod tests {
     use proptest::prelude::*;
     use rand::prelude::*;
     use rand_chacha::ChaCha8Rng;
-    use std::{collections::BTreeMap, io::prelude::*, sync::Arc};
+    use std::{collections::BTreeMap, hash::BuildHasher, io::prelude::*, sync::Arc};
     use tokio::io::AsyncReadExt;
+
+    #[derive(Clone)]
+    struct DeterministicBuildHasher(ahash::RandomState);
+
+    impl Default for DeterministicBuildHasher {
+        fn default() -> Self {
+            Self(ahash::RandomState::with_seeds(0, 0, 0, 0))
+        }
+    }
+
+    impl BuildHasher for DeterministicBuildHasher {
+        type Hasher = ahash::AHasher;
+
+        fn build_hasher(&self) -> Self::Hasher {
+            self.0.build_hasher()
+        }
+    }
+
+    type TestHashMap<K, V> = ahash::AHashMap<K, V, DeterministicBuildHasher>;
 
     #[tokio::test]
     async fn test_builder_basics() -> Result<()> {
@@ -672,11 +691,11 @@ mod tests {
     /// Read a stream of (cid, block) pairs into an in memory store and return the store and the root cid
     async fn stream_to_resolver(
         stream: impl Stream<Item = Result<(Cid, Bytes)>>,
-    ) -> Result<(Cid, Resolver<Arc<fnv::FnvHashMap<Cid, Bytes>>>)> {
+    ) -> Result<(Cid, Resolver<Arc<TestHashMap<Cid, Bytes>>>)> {
         tokio::pin!(stream);
         let items: Vec<_> = stream.try_collect().await?;
         let (root, _) = items.last().context("no root")?.clone();
-        let store: fnv::FnvHashMap<Cid, Bytes> = items.into_iter().collect();
+        let store: TestHashMap<Cid, Bytes> = items.into_iter().collect();
         let resolver = Resolver::new(Arc::new(store));
         Ok((root, resolver))
     }

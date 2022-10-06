@@ -988,6 +988,21 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl<S: BuildHasher + Clone + Send + Sync + 'static> ContentLoader
+        for ahash::AHashMap<Cid, Bytes, S>
+    {
+        async fn load_cid(&self, cid: &Cid) -> Result<LoadedCid> {
+            match self.get(cid) {
+                Some(b) => Ok(LoadedCid {
+                    data: b.clone(),
+                    source: Source::Bitswap,
+                }),
+                None => bail!("not found"),
+            }
+        }
+    }
+
     async fn load_fixture(p: &str) -> Bytes {
         Bytes::from(tokio::fs::read(format!("./fixtures/{p}")).await.unwrap())
     }
