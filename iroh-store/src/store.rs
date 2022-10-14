@@ -29,9 +29,26 @@ use crate::Config;
 pub struct Store {
     inner: Arc<InnerStore>,
 }
+unsafe impl Send for CfHandles<'_> {}
+unsafe impl Sync for CfHandles<'_> {}
+
+struct CfHandles<'a> {
+    id: &'a rocksdb::ColumnFamily,
+    graph: &'a rocksdb::ColumnFamily,
+    metadata: &'a rocksdb::ColumnFamily,
+    blobs: &'a rocksdb::ColumnFamily,
+}
+
+self_cell::self_cell! {
+    struct DbHolder {
+        owner: RocksDb,
+        #[covariant]
+        dependent: CfHandles,
+    }
+}
 
 struct InnerStore {
-    content: RocksDb,
+    holder: DbHolder,
     next_id: AtomicU64,
     _cache: Cache,
     _rpc_client: RpcClient,
@@ -72,6 +89,25 @@ fn default_blob_opts() -> Options {
 }
 
 impl Store {
+    fn create_holder(db: RocksDb) -> anyhow::Result<DbHolder> {
+        DbHolder::try_new::<anyhow::Error>(db, |db| {
+            Ok(CfHandles {
+                id: db
+                    .cf_handle(CF_ID_V0)
+                    .context("missing column family: id")?,
+                metadata: db
+                    .cf_handle(CF_METADATA_V0)
+                    .context("missing column family: metadata")?,
+                graph: db
+                    .cf_handle(CF_GRAPH_V0)
+                    .context("missing column family: graph")?,
+                blobs: db
+                    .cf_handle(CF_BLOBS_V0)
+                    .context("missing column family: blobs")?,
+            })
+        })
+    }
+
     /// Creates a new database.
     #[tracing::instrument]
     pub async fn create(config: Config) -> Result<Self> {
@@ -108,7 +144,7 @@ impl Store {
 
         Ok(Store {
             inner: Arc::new(InnerStore {
-                content: db,
+                holder: Self::create_holder(db)?,
                 next_id: 1.into(),
                 _cache: cache,
                 _rpc_client,
@@ -160,7 +196,7 @@ impl Store {
 
         Ok(Store {
             inner: Arc::new(InnerStore {
-                content: db,
+                holder: Self::create_holder(db)?,
                 next_id: next_id.into(),
                 _cache: cache,
                 _rpc_client,
@@ -199,10 +235,10 @@ impl Store {
         let graph = Versioned(GraphV0 { children });
         let graph_bytes = rkyv::to_bytes::<_, 1024>(&graph)?; // TODO: is this the right amount of scratch space?
 
-        let cf_id = self.cf_id()?;
-        let cf_meta = self.cf_metadata()?;
-        let cf_graph = self.cf_graph()?;
-        let cf_blobs = self.cf_blobs()?;
+        let cf_id = self.cf_id();
+        let cf_blobs = self.cf_blobs();
+        let cf_meta = self.cf_metadata();
+        let cf_graph = self.cf_graph();
         let blob_size = blob.as_ref().len();
 
         let mut batch = WriteBatch::default();
@@ -244,7 +280,7 @@ impl Store {
     pub async fn has(&self, cid: &Cid) -> Result<bool> {
         match self.get_id(cid).await? {
             Some(id) => {
-                let cf_blobs = self.cf_blobs()?;
+                let cf_blobs = self.cf_blobs();
                 let exists = self
                     .db()
                     .get_pinned_cf(cf_blobs, id.to_be_bytes())?
@@ -279,7 +315,7 @@ impl Store {
 
     #[tracing::instrument(skip(self))]
     async fn get_id(&self, cid: &Cid) -> Result<Option<u64>> {
-        let cf_id = self.cf_id()?;
+        let cf_id = self.cf_id();
         let multihash = cid.hash().to_bytes();
         let maybe_id_bytes = self.db().get_pinned_cf(cf_id, multihash)?;
         match maybe_id_bytes {
@@ -293,7 +329,7 @@ impl Store {
 
     #[tracing::instrument(skip(self))]
     async fn get_by_id(&self, id: u64) -> Result<Option<DBPinnableSlice<'_>>> {
-        let cf_blobs = self.cf_blobs()?;
+        let cf_blobs = self.cf_blobs();
         let maybe_blob = self.db().get_pinned_cf(cf_blobs, id.to_be_bytes())?;
 
         Ok(maybe_blob)
@@ -301,12 +337,12 @@ impl Store {
 
     #[tracing::instrument(skip(self))]
     async fn get_links_by_id(&self, id: u64) -> Result<Option<Vec<Cid>>> {
-        let cf_graph = self.cf_graph()?;
+        let cf_graph = self.cf_graph();
         let id_bytes = id.to_be_bytes();
         // FIXME: can't use pinned because otherwise this can trigger alignment issues :/
         match self.db().get_cf(cf_graph, &id_bytes)? {
             Some(links_id) => {
-                let cf_meta = self.cf_metadata()?;
+                let cf_meta = self.cf_metadata();
                 let graph = rkyv::check_archived_root::<Versioned<GraphV0>>(&links_id)
                     .map_err(|e| anyhow!("{:?}", e))?;
                 let keys = graph
@@ -343,9 +379,8 @@ impl Store {
     where
         I: IntoIterator<Item = Cid>,
     {
-        let cf_id = self.cf_id()?;
-        let cf_meta = self.cf_metadata()?;
-
+        let cf_id = self.cf_id();
+        let cf_meta = self.cf_metadata();
         let mut ids = Vec::new();
         let mut batch = WriteBatch::default();
         for cid in cids {
@@ -383,31 +418,23 @@ impl Store {
     }
 
     fn db(&self) -> &RocksDb {
-        &self.inner.content
+        self.inner.holder.borrow_owner()
     }
 
-    fn cf_id(&self) -> Result<&ColumnFamily> {
-        self.db()
-            .cf_handle(CF_ID_V0)
-            .context("missing column family: id")
+    fn cf_id(&self) -> &ColumnFamily {
+        self.inner.holder.borrow_dependent().id
     }
 
-    fn cf_metadata(&self) -> Result<&ColumnFamily> {
-        self.db()
-            .cf_handle(CF_METADATA_V0)
-            .context("missing column family: metadata")
+    fn cf_metadata(&self) -> &ColumnFamily {
+        self.inner.holder.borrow_dependent().metadata
     }
 
-    fn cf_blobs(&self) -> Result<&ColumnFamily> {
-        self.db()
-            .cf_handle(CF_BLOBS_V0)
-            .context("missing column family: blobs")
+    fn cf_blobs(&self) -> &ColumnFamily {
+        self.inner.holder.borrow_dependent().blobs
     }
 
-    fn cf_graph(&self) -> Result<&ColumnFamily> {
-        self.db()
-            .cf_handle(CF_GRAPH_V0)
-            .context("missing column family: graph")
+    fn cf_graph(&self) -> &ColumnFamily {
+        self.inner.holder.borrow_dependent().graph
     }
 }
 
