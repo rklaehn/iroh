@@ -265,7 +265,7 @@ jobs:
         type: string
         default: ""
     environment:
-      RUST_LOG: info
+      RUST_LOG: error
     steps:
       - set-env-path
       - setup-protoc
