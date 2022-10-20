@@ -49,7 +49,7 @@ fn fixture_get() -> MockApi {
                 OutType::Reader(Box::new(std::io::Cursor::new("hello"))),
             )),
         ])
-        .boxed_local()
+        .boxed()
     });
     api
 }
@@ -62,7 +62,7 @@ fn fixture_add_file() -> MockApi {
             .map_err(|e| e.into());
 
         Box::pin(future::ready(Ok(
-            futures::stream::iter(vec![add_event]).boxed_local()
+            futures::stream::iter(vec![add_event]).boxed()
         )))
     });
     api
@@ -76,7 +76,7 @@ fn fixture_add_directory() -> MockApi {
             .map_err(|e| e.into());
 
         Box::pin(future::ready(Ok(
-            futures::stream::iter(vec![add_event]).boxed_local()
+            futures::stream::iter(vec![add_event]).boxed()
         )))
     });
     api
@@ -92,7 +92,7 @@ fn fixture_get_wrapped_file() -> MockApi {
                 OutType::Reader(Box::new(std::io::Cursor::new("hello"))),
             )),
         ])
-        .boxed_local()
+        .boxed()
     });
     api
 }
@@ -104,7 +104,7 @@ fn fixture_get_unwrapped_file() -> MockApi {
             RelativePathBuf::from_path("").unwrap(),
             OutType::Reader(Box::new(std::io::Cursor::new("hello"))),
         ))])
-        .boxed_local()
+        .boxed()
     });
     api
 }
@@ -119,7 +119,7 @@ fn fixture_get_wrapped_symlink() -> MockApi {
                 OutType::Symlink(PathBuf::from("target/path/foo.txt")),
             )),
         ])
-        .boxed_local()
+        .boxed()
     });
     api
 }
@@ -131,7 +131,7 @@ fn fixture_get_unwrapped_symlink() -> MockApi {
             RelativePathBuf::from_path("").unwrap(),
             OutType::Symlink(PathBuf::from("target/path/foo.txt")),
         ))])
-        .boxed_local()
+        .boxed()
     });
     api
 }

@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use crate::{AddEvent, Api, Cid, IpfsPath, OutType};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use futures::stream::LocalBoxStream;
+use futures::stream::BoxStream;
 use futures::Stream;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use relative_path::RelativePathBuf;
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait ApiExt: Api {
     /// High level get, equivalent of CLI `iroh get`
     async fn get<'a>(
@@ -36,7 +36,7 @@ pub trait ApiExt: Api {
         &self,
         path: &Path,
         wrap: bool,
-    ) -> Result<LocalBoxStream<'static, Result<AddEvent>>> {
+    ) -> Result<BoxStream<Result<AddEvent>>> {
         if path.is_dir() {
             self.add_dir(path, wrap).await
         } else if path.is_symlink() {

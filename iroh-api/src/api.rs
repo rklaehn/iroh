@@ -7,8 +7,8 @@ use crate::p2p::MockP2p;
 use crate::p2p::{ClientP2p, P2p};
 use crate::{AddEvent, IpfsPath};
 use anyhow::Result;
-use futures::future::{BoxFuture, LocalBoxFuture};
-use futures::stream::LocalBoxStream;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use futures::FutureExt;
 use futures::StreamExt;
 use iroh_resolver::unixfs_builder;
@@ -26,7 +26,7 @@ pub struct Iroh {
 
 pub enum OutType {
     Dir,
-    Reader(Box<dyn AsyncRead + Unpin>),
+    Reader(Box<dyn AsyncRead + Send + Unpin>),
     Symlink(PathBuf),
 }
 
@@ -35,7 +35,7 @@ pub enum OutType {
 // Instead we spell things out explicitly without magic.
 
 #[cfg_attr(feature= "testing", automock(type P = MockP2p;))]
-pub trait Api {
+pub trait Api: Send + Sync {
     type P: P2p;
 
     fn p2p(&self) -> Result<Self::P>;
@@ -43,29 +43,27 @@ pub trait Api {
     /// Produces a asynchronous stream of file descriptions
     /// Each description is a tuple of a relative path, and either a `Directory` or a `Reader`
     /// with the file contents.
-    fn get_stream(
-        &self,
-        ipfs_path: &IpfsPath,
-    ) -> LocalBoxStream<'_, Result<(RelativePathBuf, OutType)>>;
+    fn get_stream(&self, ipfs_path: &IpfsPath)
+        -> BoxStream<'_, Result<(RelativePathBuf, OutType)>>;
 
     fn add_file(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>>;
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>>;
     fn add_dir(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>>;
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>>;
     fn add_symlink(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>>;
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>>;
 
     fn check(&self) -> BoxFuture<'_, StatusTable>;
-    fn watch(&self) -> LocalBoxFuture<'static, LocalBoxStream<'static, StatusTable>>;
+    fn watch(&self) -> BoxFuture<'static, BoxStream<'static, StatusTable>>;
 }
 
 impl Iroh {
@@ -108,7 +106,7 @@ impl Api for Iroh {
     fn get_stream(
         &self,
         ipfs_path: &IpfsPath,
-    ) -> LocalBoxStream<'_, Result<(RelativePathBuf, OutType)>> {
+    ) -> BoxStream<'_, Result<(RelativePathBuf, OutType)>> {
         tracing::debug!("get {:?}", ipfs_path);
         let resolver = iroh_resolver::resolver::Resolver::new(self.client.clone());
         let results = resolver.resolve_recursive_with_paths(ipfs_path.clone());
@@ -140,14 +138,14 @@ impl Api for Iroh {
                 }
             }
         }
-        .boxed_local()
+        .boxed()
     }
 
     fn add_file(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>> {
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>> {
         let providing_client = iroh_resolver::unixfs_builder::StoreAndProvideClient {
             client: self.client.clone(),
         };
@@ -155,16 +153,16 @@ impl Api for Iroh {
         async move {
             unixfs_builder::add_file(Some(providing_client), &path, wrap)
                 .await
-                .map(|s| s.boxed_local())
+                .map(|s| s.boxed())
         }
-        .boxed_local()
+        .boxed()
     }
 
     fn add_dir(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>> {
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>> {
         let providing_client = iroh_resolver::unixfs_builder::StoreAndProvideClient {
             client: self.client.clone(),
         };
@@ -172,16 +170,16 @@ impl Api for Iroh {
         async move {
             unixfs_builder::add_dir(Some(providing_client), &path, wrap)
                 .await
-                .map(|s| s.boxed_local())
+                .map(|s| s.boxed())
         }
-        .boxed_local()
+        .boxed()
     }
 
     fn add_symlink(
         &self,
         path: &Path,
         wrap: bool,
-    ) -> LocalBoxFuture<'_, Result<LocalBoxStream<'static, Result<AddEvent>>>> {
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AddEvent>>>> {
         let providing_client = iroh_resolver::unixfs_builder::StoreAndProvideClient {
             client: self.client.clone(),
         };
@@ -189,19 +187,17 @@ impl Api for Iroh {
         async move {
             unixfs_builder::add_symlink(Some(providing_client), &path, wrap)
                 .await
-                .map(|s| s.boxed_local())
+                .map(|s| s.boxed())
         }
-        .boxed_local()
+        .boxed()
     }
 
     fn check(&self) -> BoxFuture<'_, StatusTable> {
         async { self.client.check().await }.boxed()
     }
 
-    fn watch(
-        &self,
-    ) -> LocalBoxFuture<'static, LocalBoxStream<'static, iroh_rpc_client::StatusTable>> {
+    fn watch(&self) -> BoxFuture<'static, BoxStream<'static, iroh_rpc_client::StatusTable>> {
         let client = self.client.clone();
-        async { client.watch().await.boxed_local() }.boxed_local()
+        async { client.watch().await.boxed() }.boxed()
     }
 }

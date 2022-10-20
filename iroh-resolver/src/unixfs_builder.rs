@@ -9,7 +9,7 @@ use async_recursion::async_recursion;
 use async_trait::async_trait;
 use bytes::Bytes;
 use cid::Cid;
-use futures::{stream::LocalBoxStream, Stream, StreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use iroh_rpc_client::Client;
 use prost::Message;
 use tokio::io::AsyncRead;
@@ -69,7 +69,7 @@ impl Directory {
         current.expect("must not be empty")
     }
 
-    pub fn encode<'a>(self) -> LocalBoxStream<'a, Result<Block>> {
+    pub fn encode<'a>(self) -> BoxStream<'a, Result<Block>> {
         async_stream::try_stream! {
             let mut links = Vec::new();
             for entry in self.entries {
@@ -125,12 +125,12 @@ impl Directory {
             let node = UnixfsNode::Directory(Node { outer, inner });
             yield node.encode()?;
         }
-        .boxed_local()
+        .boxed()
     }
 }
 
 enum Content {
-    Reader(Pin<Box<dyn AsyncRead>>),
+    Reader(Pin<Box<dyn AsyncRead + Send>>),
     Path(PathBuf),
 }
 
@@ -264,7 +264,7 @@ impl Symlink {
 pub struct FileBuilder {
     name: Option<String>,
     path: Option<PathBuf>,
-    reader: Option<Pin<Box<dyn AsyncRead>>>,
+    reader: Option<Pin<Box<dyn AsyncRead + Send>>>,
     chunk_size: Option<usize>,
     degree: Option<usize>,
 }
@@ -318,7 +318,10 @@ impl FileBuilder {
         self
     }
 
-    pub fn content_reader<T: tokio::io::AsyncRead + 'static>(&mut self, content: T) -> &mut Self {
+    pub fn content_reader<T: tokio::io::AsyncRead + Send + 'static>(
+        &mut self,
+        content: T,
+    ) -> &mut Self {
         self.reader = Some(Box::pin(content));
         self
     }
@@ -489,7 +492,7 @@ pub(crate) fn encode_unixfs_pb(
 }
 
 #[async_trait]
-pub trait Store {
+pub trait Store: Send + Sync {
     async fn put(&self, cid: Cid, blob: Bytes, links: Vec<Cid>) -> Result<()>;
 }
 
@@ -598,10 +601,10 @@ pub enum AddEvent {
     Done(Cid),
 }
 
-pub async fn add_blocks_to_store<S: Store>(
+pub async fn add_blocks_to_store<S: Store + Send>(
     store: Option<S>,
-    mut blocks: Pin<Box<dyn Stream<Item = Result<Block>>>>,
-) -> impl Stream<Item = Result<AddEvent>> {
+    mut blocks: Pin<Box<dyn Stream<Item = Result<Block>> + Send>>,
+) -> impl Stream<Item = Result<AddEvent>> + Send {
     async_stream::try_stream! {
 
         let mut root = None;
@@ -622,8 +625,8 @@ pub async fn add_blocks_to_store<S: Store>(
     }
 }
 
-#[async_recursion(?Send)]
-async fn make_dir_from_path<P: Into<PathBuf>>(path: P) -> Result<Directory> {
+#[async_recursion]
+async fn make_dir_from_path<P: Into<PathBuf> + Send>(path: P) -> Result<Directory> {
     let path = path.into();
     let mut dir = DirectoryBuilder::new();
     dir.name(
@@ -807,7 +810,7 @@ mod tests {
     type TestDir = BTreeMap<String, TestDirEntry>;
 
     /// builds an unixfs directory out of a TestDir
-    #[async_recursion(?Send)]
+    #[async_recursion]
     async fn build_directory(name: &str, dir: &TestDir) -> Result<Directory> {
         let mut builder = DirectoryBuilder::new();
         builder.name(name);
