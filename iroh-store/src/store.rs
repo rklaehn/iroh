@@ -3,7 +3,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    thread::available_parallelism,
+    thread::available_parallelism, rc::Rc,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
